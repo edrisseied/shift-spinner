@@ -1,0 +1,311 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Shift Spinner – Simple Assignments</title>
+<style>
+  :root { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; }
+  body { margin: 24px; }
+  h1 { margin: 0 0 12px; font-size: 22px; }
+  .grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
+  .card { border: 1px solid #ddd; border-radius: 12px; padding: 14px; }
+  textarea, input, select, button { width: 100%; padding: 10px; border-radius: 10px; border: 1px solid #ccc; font-size: 14px; }
+  textarea { min-height: 120px; }
+  .row { display: flex; gap: 10px; align-items: center; }
+  .row > * { flex: 1; }
+  .actions { display: flex; gap: 10px; margin-top: 10px; }
+  .pill { display:inline-block; padding:6px 10px; border:1px solid #ccc; border-radius:999px; margin:4px 6px 0 0; font-size:13px;}
+  .pill.locked { border-style: dashed; opacity: .7; }
+  .subtle { color:#666; font-size: 12px; margin-top: 6px; }
+  .result { white-space: pre-wrap; background: #fafafa; border:1px dashed #ddd; padding:12px; border-radius:10px; }
+  .muted { color:#555; font-size:13px; }
+  .hl { font-weight:600; }
+</style>
+</head>
+<body>
+  <h1>Shift Spinner</h1>
+  <div class="grid">
+    <div class="card">
+      <h3>1) Today’s Servers</h3>
+      <textarea id="servers" placeholder="Comma or new line separated names&#10;e.g. Maria, Cecilia, Natasha, David, Michael, Rachel, Sam"></textarea>
+      <div class="row">
+        <div>
+          <label class="muted">How many go home?</label>
+          <input id="numGoHome" type="number" min="0" value="1">
+        </div>
+        <div>
+          <label class="muted">Pick a checker?</label>
+          <select id="pickChecker">
+            <option value="yes" selected>Yes</option>
+            <option value="no">No</option>
+          </select>
+        </div>
+      </div>
+      <div class="subtle">Tip: use the lock buttons below to keep a specific pick when you re-spin.</div>
+    </div>
+
+    <div class="card">
+      <h3>2) Site-Work / Sections</h3>
+      <textarea id="tasks" placeholder="Comma or new line separated tasks&#10;e.g. Section A, Section B, Section C, Silverware, Expo, Coffee/Tea, Bathrooms"></textarea>
+      <div class="row">
+        <div>
+          <label class="muted">Shift</label>
+          <select id="shift">
+            <option>Morning</option>
+            <option selected>Mid</option>
+            <option>Night</option>
+          </select>
+        </div>
+        <div>
+          <label class="muted">Keep previous inputs?</label>
+          <select id="persist">
+            <option value="yes" selected>Yes (on this device)</option>
+            <option value="no">No</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>3) Spin</h3>
+      <div class="actions">
+        <button id="spinAll">🎡 Spin Everything</button>
+        <button id="spinAssignments">🔁 Re-spin Assignments</button>
+        <button id="spinGoHome">🏠 Re-spin Go-Home</button>
+        <button id="spinChecker">✅ Re-spin Checker</button>
+      </div>
+      <div class="subtle">Locks:</div>
+      <div class="actions">
+        <button id="lockGoHome">🔒/🔓 Go-Home</button>
+        <button id="lockChecker">🔒/🔓 Checker</button>
+        <button id="lockAssignments">🔒/🔓 Assignments</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Results</h3>
+      <div id="chips"></div>
+      <div class="result" id="out">No results yet.</div>
+      <div class="actions">
+        <button id="copy">📋 Copy Summary</button>
+        <button id="clear">🧹 Clear All</button>
+      </div>
+      <div class="subtle">Fairness: random shuffle uses Fisher-Yates. Re-spin ignores locked parts.</div>
+    </div>
+  </div>
+
+<script>
+const $ = (id)=>document.getElementById(id);
+
+function parseList(s){
+  return (s||"")
+    .split(/\n|,/)
+    .map(x=>x.trim())
+    .filter(Boolean);
+}
+
+function shuffle(arr){
+  const a = arr.slice();
+  for (let i=a.length-1;i>0;i--){
+    const j = Math.floor(Math.random()*(i+1));
+    [a[i],a[j]]=[a[j],a[i]];
+  }
+  return a;
+}
+
+const state = {
+  goHomeLocked:false,
+  checkerLocked:false,
+  assignmentsLocked:false,
+  last:{
+    goHome:[],
+    checker:null,
+    assignments:{} // task -> name
+  }
+};
+
+function saveIfNeeded(){
+  if ($("persist").value==="yes"){
+    const data = {
+      servers: $("servers").value,
+      tasks: $("tasks").value,
+      numGoHome: $("numGoHome").value,
+      pickChecker: $("pickChecker").value,
+      shift: $("shift").value
+    };
+    localStorage.setItem("shiftSpinnerData", JSON.stringify(data));
+  }
+}
+
+function loadSaved(){
+  const raw = localStorage.getItem("shiftSpinnerData");
+  if (!raw) return;
+  try{
+    const d = JSON.parse(raw);
+    $("servers").value = d.servers||"";
+    $("tasks").value = d.tasks||"";
+    $("numGoHome").value = d.numGoHome||"1";
+    $("pickChecker").value = d.pickChecker||"yes";
+    $("shift").value = d.shift||"Mid";
+  }catch(e){}
+}
+
+function showChips(names){
+  $("chips").innerHTML = names.map(n=>`<span class="pill">${n}</span>`).join("");
+}
+
+function compute(kind){
+  const servers = parseList($("servers").value);
+  const tasks = parseList($("tasks").value);
+  const needGoHome = Math.max(0, Math.min(parseInt($("numGoHome").value||0,10), servers.length));
+  const wantChecker = $("pickChecker").value==="yes";
+
+  if (servers.length===0){ $("out").textContent="Add servers to spin."; showChips([]); return; }
+  showChips(servers);
+
+  let pool = shuffle(servers);
+
+  // Apply locks by reserving last picks (when possible)
+  let goHome = [];
+  let checker = null;
+  let assignments = {};
+
+  if (state.goHomeLocked && state.last.goHome.length){
+    goHome = state.last.goHome.filter(n => pool.includes(n)).slice(0, needGoHome);
+    pool = pool.filter(n=>!goHome.includes(n));
+  }
+  if (wantChecker && state.checkerLocked && state.last.checker && pool.includes(state.last.checker)){
+    checker = state.last.checker;
+    pool = pool.filter(n=>n!==checker);
+  }
+  if (state.assignmentsLocked && Object.keys(state.last.assignments).length){
+    for (const t of Object.keys(state.last.assignments)){
+      const who = state.last.assignments[t];
+      if (pool.includes(who)){
+        assignments[t]=who;
+        pool = pool.filter(n=>n!==who);
+      }
+    }
+  }
+
+  // Decide what to re-roll
+  const doGoHome = (kind==="all" || kind==="goHome");
+  const doChecker = (kind==="all" || kind==="checker");
+  const doAssign = (kind==="all" || kind==="assign");
+
+  if (doGoHome && !state.goHomeLocked){
+    // refill pool (combine with previously locked checker/assignments removals already applied)
+    const toPick = needGoHome - goHome.length;
+    for (let i=0;i<toPick;i++){
+      if (!pool.length) break;
+      goHome.push(pool.shift());
+    }
+  }
+
+  if (doChecker && wantChecker && !state.checkerLocked){
+    if (!checker){
+      if (!pool.length){
+        // if pool empty, take from goHome (swap)
+        if (goHome.length){
+          checker = goHome.pop();
+        }
+      } else {
+        checker = pool.shift();
+      }
+    }
+  }
+
+  if (doAssign && !state.assignmentsLocked){
+    const remaining = pool.slice();
+    const available = remaining.slice();
+    const neededTasks = tasks.slice(0); // only as many as we have people
+    // Remove tasks already locked
+    for (const t of Object.keys(assignments)){
+      const who = assignments[t];
+      const idx = available.indexOf(who);
+      if (idx>-1) available.splice(idx,1);
+      const ti = neededTasks.indexOf(t);
+      if (ti>-1) neededTasks.splice(ti,1);
+    }
+    // Build the assignable pool: everyone not going home and not checker
+    const basePool = servers.filter(n => !goHome.includes(n) && (!wantChecker || n!==checker));
+    // Remove already locked assignees
+    const freshPool = basePool.filter(n => !Object.values(assignments).includes(n));
+    const shuffled = shuffle(freshPool);
+    // Assign per task
+    neededTasks.forEach(t=>{
+      if (!shuffled.length) return;
+      const who = shuffled.shift();
+      assignments[t]=who;
+    });
+  }
+
+  // Store last
+  state.last.goHome = goHome;
+  state.last.checker = checker;
+  state.last.assignments = assignments;
+
+  // Build output
+  let lines = [];
+  lines.push(`Shift: ${$("shift").value}`);
+  if (goHome.length){
+    lines.push(`\n🏠 Go home: ${goHome.join(", ")}`);
+  } else {
+    lines.push(`\n🏠 Go home: (none)`);
+  }
+  if (wantChecker){
+    lines.push(`✅ Checker: ${checker || "(not picked)"}`);
+  }
+  const taskEntries = Object.entries(assignments);
+  if (taskEntries.length){
+    lines.push(`\n🧹 Site-work / Sections:`);
+    for (const [t,who] of taskEntries){
+      lines.push(`• ${t}: ${who}`);
+    }
+  } else {
+    lines.push(`\n🧹 Site-work / Sections: (no tasks or no available staff)`);
+  }
+  $("out").textContent = lines.join("\n");
+  saveIfNeeded();
+}
+
+$("spinAll").addEventListener("click", ()=>compute("all"));
+$("spinAssignments").addEventListener("click", ()=>compute("assign"));
+$("spinGoHome").addEventListener("click", ()=>compute("goHome"));
+$("spinChecker").addEventListener("click", ()=>compute("checker"));
+
+$("lockGoHome").addEventListener("click", ()=>{
+  state.goHomeLocked = !state.goHomeLocked;
+  $("lockGoHome").classList.toggle("locked", state.goHomeLocked);
+});
+$("lockChecker").addEventListener("click", ()=>{
+  state.checkerLocked = !state.checkerLocked;
+  $("lockChecker").classList.toggle("locked", state.checkerLocked);
+});
+$("lockAssignments").addEventListener("click", ()=>{
+  state.assignmentsLocked = !state.assignmentsLocked;
+  $("lockAssignments").classList.toggle("locked", state.assignmentsLocked);
+});
+
+$("copy").addEventListener("click", async ()=>{
+  try{
+    await navigator.clipboard.writeText($("out").textContent);
+    alert("Copied!");
+  }catch(e){ alert("Could not copy."); }
+});
+$("clear").addEventListener("click", ()=>{
+  $("servers").value = "";
+  $("tasks").value = "";
+  $("numGoHome").value = 1;
+  $("pickChecker").value = "yes";
+  $("shift").value = "Mid";
+  state.last = {goHome:[], checker:null, assignments:{}};
+  $("out").textContent = "Cleared.";
+  localStorage.removeItem("shiftSpinnerData");
+});
+
+loadSaved();
+</script>
+</body>
+</html>
